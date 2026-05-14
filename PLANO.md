@@ -331,10 +331,10 @@ Implementação **incremental**. Cada fase entrega algo funcional e tem **checkp
 5. Configurar `venv` local (`python -m venv .venv`) e instalar dependências (`pip install -r requirements.txt`).
 
 **Checkpoints:**
-- [ ] `requirements.txt` existe e instala sem erros em ambiente limpo
-- [ ] Estrutura de pastas confere com o diagrama da seção Arquitetura
-- [ ] `python -c "import flet, edge_tts, pypdf, docx, ebooklib, pysbd, just_playback, loguru"` roda sem erro
-- [ ] `README.md` tem instruções básicas de instalação
+- [x] `requirements.txt` existe e instala sem erros em ambiente limpo
+- [x] Estrutura de pastas confere com o diagrama da seção Arquitetura
+- [x] `python -c "import flet, edge_tts, pypdf, docx, ebooklib, pysbd, just_playback, loguru"` roda sem erro
+- [x] `README.md` tem instruções básicas de instalação
 
 ---
 

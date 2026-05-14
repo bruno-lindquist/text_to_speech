@@ -1,0 +1,29 @@
+# Fizzy Bee — dependências
+
+# GUI
+flet>=0.21,<1.0
+
+# Síntese de voz
+edge-tts>=6.1,<7.0
+
+# Extratores de texto
+pypdf>=4.0,<6.0
+python-docx>=1.1,<2.0
+ebooklib>=0.18,<1.0
+beautifulsoup4>=4.12,<5.0
+
+# Segmentação de frases
+pysbd>=0.3,<1.0
+
+# Player de áudio
+just_playback>=0.1,<1.0
+
+# Logging
+loguru>=0.7,<1.0
+
+# Testes
+pytest>=8.0,<9.0
+pytest-asyncio>=0.23,<1.0
+
+# Empacotamento
+pyinstaller>=6.0,<7.0
