@@ -288,56 +288,222 @@ Testes focados em `core/` usando `pytest`:
 
 ## Roadmap de fases
 
-Implementação **incremental**, cada fase entregando algo funcional:
+Implementação **incremental**. Cada fase entrega algo funcional e tem **checkpoints de validação**. Só avançamos para a próxima fase quando **todos** os checkpoints da fase atual estiverem marcados com `[x]`.
+
+---
+
+### Fase 0 — Preparação do ambiente
+
+**Objetivo**: deixar o projeto pronto para receber código.
+
+**O que será feito:**
+1. Criar `requirements.txt` com as dependências congeladas: `flet`, `edge-tts`, `pypdf`, `python-docx`, `ebooklib`, `pysbd`, `just_playback`, `loguru`, `pytest`, `pytest-asyncio`, `pyinstaller`.
+2. Criar a estrutura completa de pastas conforme a seção **Arquitetura** (`core/`, `core/extractors/`, `ui/`, `ui/components/`, `tests/fixtures/docs/`, `tests/fixtures/audio/`, `packaging/`).
+3. Criar `README.md` mínimo (nome do projeto + como instalar e rodar).
+4. Criar arquivos `__init__.py` vazios onde forem necessários para reconhecer pacotes Python.
+5. Configurar `venv` local (`python -m venv .venv`) e instalar dependências (`pip install -r requirements.txt`).
+
+**Checkpoints:**
+- [ ] `requirements.txt` existe e instala sem erros em ambiente limpo
+- [ ] Estrutura de pastas confere com o diagrama da seção Arquitetura
+- [ ] `python -c "import flet, edge_tts, pypdf, docx, ebooklib, pysbd, just_playback, loguru"` roda sem erro
+- [ ] `README.md` tem instruções básicas de instalação
+
+---
 
 ### Fase 1 — MVP funcional (núcleo do app)
-- `core/logger.py` (loguru configurado)
-- `core/storage.py` (config básica em JSON)
-- `core/tts_engine.py` (síntese básica via edge-tts)
-- `core/audio_player.py` (play/pause/stop com just_playback + `asyncio.Lock`)
-- UI mínima Flet (asyncio): área de texto, dropdown de voz, botão play, salvar MP3
-- **Validação empírica**: confirmar que MP3s do edge-tts têm parâmetros consistentes (concatenação binária funciona) e que PyInstaller embala bem o `just_playback`/`miniaudio`
-- ✅ **Resultado: ouvir texto colado**
+
+**Objetivo**: conseguir colar um texto na janela, escolher uma voz fixa e ouvir o áudio dentro do app.
+
+**O que será feito:**
+1. **`core/logger.py`**: configura o loguru uma única vez (detecta `sys.frozen` pra escolher INFO vs WARNING; cria pasta `~/FizzyBee/logs/` se não existir; rotação diária).
+2. **`core/storage.py`**: lê/escreve `~/FizzyBee/config.json` (apenas `default_voice` e `default_rate` no MVP); retorna defaults se o arquivo não existir.
+3. **`core/tts_engine.py`**: função `async synthesize(text, voice, rate) -> bytes` que chama `edge-tts` e retorna o MP3 completo do texto curto (sem chunking ainda).
+4. **`core/audio_player.py`**: classe `AudioPlayer` com `play(mp3_bytes)`, `pause()`, `stop()`, estado protegido por `asyncio.Lock`. Internamente usa `just_playback` em `run_in_executor`.
+5. **UI mínima Flet (`ui/app.py`)**: janela com área de texto, dropdown com 3 vozes pt-BR hardcoded (Francisca, Antonio, Brenda), botão "▶ Reproduzir", botão "⏹ Parar", botão "💾 Salvar MP3".
+6. **`main.py`**: ponto de entrada que inicializa logger e roda o Flet app em modo asyncio.
+7. **Validação empírica** (parte essencial da fase, não pode ser pulada):
+   - Sintetizar o mesmo texto 3 vezes e checar com `ffprobe` (ou módulo `mutagen`) se sample rate e canais batem entre as 3 amostras → valida hipótese da concatenação binária
+   - Fazer PyInstaller experimental do MVP e abrir o `.app` em macOS limpo → confirma que `just_playback`/`miniaudio` empacotam
+
+**Checkpoints:**
+- [ ] Cola-se texto, clica play, ouve o áudio com a voz selecionada
+- [ ] Botão Stop interrompe a reprodução na hora
+- [ ] Botão "Salvar MP3" gera arquivo que toca corretamente em outro player do SO
+- [ ] Logs aparecem em `~/FizzyBee/logs/fizzy_bee.log`
+- [ ] **Validação empírica 1**: três síntese consecutivas têm mesmo sample rate/canais (anotar no commit)
+- [ ] **Validação empírica 2**: PyInstaller gera `.app` funcional (sem testes de UI extensivos, só confirma que abre e toca)
+- [ ] `pytest` roda os testes unitários de `tts_engine` (com mock) e `audio_player` (métodos puros) sem falhas
+
+---
 
 ### Fase 2 — Importação de arquivos
-- `core/extractors/` (TXT, PDF, DOCX, EPUB)
-- `core/text_chunker.py` (pysbd; calibrar limite real do edge-tts)
-- Botão "Abrir arquivo" + drag-and-drop (validar suporte do Flet em macOS; fallback para só diálogo se necessário)
+
+**Objetivo**: abrir arquivos TXT/PDF/DOCX/EPUB e ouvir textos longos (com chunking).
+
+**O que será feito:**
+1. **`core/extractors/__init__.py`**: função `extract(path: Path) -> str` que escolhe o extractor certo pela extensão e devolve texto puro.
+2. **`core/extractors/txt.py`**: lê com `pathlib` respeitando encoding (UTF-8 com fallback para latin-1).
+3. **`core/extractors/pdf.py`**: usa `pypdf` para concatenar texto de todas as páginas.
+4. **`core/extractors/docx.py`**: usa `python-docx` para extrair parágrafos.
+5. **`core/extractors/epub.py`**: usa `ebooklib` + `BeautifulSoup` para extrair texto de cada item HTML do EPUB.
+6. **`core/text_chunker.py`**: função `chunk(text, language, max_chars=3000) -> list[str]` usando `pysbd`. Junta frases até chegar perto do limite, fecha o chunk, abre o próximo.
+7. **`tts_engine.py`** ganha modo "sintetiza por chunks": função `async synthesize_chunks(chunks: list[str], voice, rate) -> AsyncIterator[bytes]` que retorna os MP3s de cada chunk (ainda **sem** streaming progressivo — Fase 1.5 do player junta tudo em memória antes de tocar).
+8. **`audio_player.py`** ganha capacidade de tocar uma fila de MP3s em sequência.
+9. **UI**: botão "📁 Abrir arquivo" com diálogo do SO. Tentar implementar drag-and-drop e validar; se não funcionar bem no Flet em macOS, deixar só o botão.
+10. **Calibração empírica do limite de chunk**: testar com texto de 5000, 10000, 20000 chars; medir tempo de resposta do edge-tts; ajustar `max_chars` se preciso.
+
+**Checkpoints:**
+- [ ] Abrir um `.txt` longo (>10k chars) e ouvir do início ao fim sem erro
+- [ ] Abrir um `.pdf` de pelo menos 3 páginas e ouvir
+- [ ] Abrir um `.docx` simples e ouvir
+- [ ] Abrir um `.epub` (qualquer livro pequeno em domínio público) e ouvir
+- [ ] `pysbd` divide texto com abreviações ("Sr. Silva foi ao Dr. Mendes.") em **uma única frase**, não duas
+- [ ] Drag-and-drop funciona OU está documentado como desabilitado no README
+- [ ] Limite ideal de `max_chars` calibrado e anotado no `text_chunker.py`
+- [ ] Testes de `extractors/` passam com fixtures em `tests/fixtures/docs/`
+
+---
 
 ### Fase 3 — Controles avançados de voz
-- Filtro de idioma + lista completa de vozes (com voz padrão hardcoded como fallback offline)
-- Sliders de velocidade e volume
+
+**Objetivo**: deixar o usuário escolher qualquer voz do edge-tts e ajustar velocidade/volume.
+
+**O que será feito:**
+1. **`tts_engine.py`** ganha função `async list_voices() -> list[Voice]` que chama `edge_tts.list_voices()` e cacheia o resultado em memória durante a sessão.
+2. **Fallback offline**: voz padrão hardcoded (`pt-BR-FranciscaNeural`) usada se `list_voices()` falhar (sem internet na primeira execução).
+3. **`ui/components/voice_controls.py`**: componente Flet com dois dropdowns (idioma → voz) + dois sliders (velocidade -50%/+100%, volume 0-100%).
+4. **Filtro de idioma**: extrai locales únicos da lista de vozes (`pt-BR`, `en-US`, `es-ES`, etc.), ordena alfabeticamente, mostra no primeiro dropdown.
+5. **Filtro de voz**: ao escolher idioma, segundo dropdown popula com as vozes daquele locale.
+6. **Aplicar parâmetros**: rate e volume vão como `rate=+10%`, `volume=-5%` na chamada do `edge_tts.Communicate` (formato exigido pela biblioteca).
+7. **Persistência**: voz, idioma, rate e volume escolhidos são salvos em `config.json` ao mudar, e restaurados na próxima abertura.
+
+**Checkpoints:**
+- [ ] Lista completa de vozes carrega (>30 vozes em pt-BR/en-US disponíveis)
+- [ ] Trocar idioma filtra as vozes corretamente
+- [ ] Slider de velocidade muda o ritmo (testar -25%, 0%, +25%, +50%)
+- [ ] Slider de volume muda o nível do áudio audivelmente
+- [ ] Sem internet na primeira execução, app abre e usa Francisca como fallback (validar matando rede temporariamente)
+- [ ] Preferências persistem entre reinicializações do app
+
+---
 
 ### Fase 4 — Persistência e histórico
-- Histórico de leituras em `core/storage.py` (FIFO de 50)
-- Painel lateral (`side_panel.py`) com lista de histórico
+
+**Objetivo**: lembrar das últimas leituras e deixar o usuário voltar nelas com um clique.
+
+**O que será feito:**
+1. **`core/storage.py`** ganha `save_history_entry(text, voice, timestamp)` e `load_history() -> list[Entry]`. Limite **FIFO de 50 entradas** — a entrada mais antiga é descartada quando uma nova passa do limite.
+2. **Cada entrada** guarda: snippet do texto (primeiros 80 chars), texto completo, voz usada, rate, timestamp ISO 8601.
+3. **`ui/components/side_panel.py`**: painel lateral à esquerda com lista de cartões (snippet + data + voz). Clicar reabre o texto e os controles na janela principal.
+4. **Salvamento automático**: cada vez que o play é acionado, a entrada é adicionada ao histórico (após começar a tocar, não antes).
+5. **Botão "🗑 Limpar histórico"** no rodapé do painel, com diálogo de confirmação.
+6. **Shutdown limpo**: histórico é salvo na sequência definida em **Concorrência → Shutdown limpo**.
+
+**Checkpoints:**
+- [ ] Após 3 leituras, o painel mostra 3 cartões na ordem do mais recente para o mais antigo
+- [ ] Clicar num cartão reabre o texto na área principal com a mesma voz/rate
+- [ ] Histórico para de crescer ao chegar em 50 entradas (FIFO funcionando)
+- [ ] Fechar e reabrir o app preserva o histórico
+- [ ] "Limpar histórico" zera a lista após confirmação
+- [ ] Teste de `storage.py` valida limite FIFO e defaults
+
+---
 
 ### Fase 5 — Player avançado + atalhos
-- Barra de progresso com seek
-- Highlight de palavra sendo lida (cada chunk guarda `offset_ms` acumulado; word boundaries do edge-tts são relativos ao chunk e somados a esse offset para obter posição absoluta; ressincronizar a cada transição de chunk com a posição real do player evita deriva)
-- **Atalhos de teclado**: espaço (play/pause), setas (seek ±5s), Esc (stop)
+
+**Objetivo**: dar ao player capacidades profissionais — barra de progresso navegável, palavra destacada e atalhos de teclado.
+
+**O que será feito:**
+1. **Streaming progressivo** (substitui o "tocar fila inteira" da Fase 2): chunk N+1 começa a sintetizar assim que chunk N inicia a reprodução. Implementação com `asyncio.Queue` entre `tts_engine` e `audio_player`.
+2. **Barra de progresso (`ui/components/player_controls.py`)**: mostra tempo decorrido / tempo total da fila completa de chunks (soma das durações conhecidas + estimativa para chunks ainda não sintetizados).
+3. **Seek**: clicar na barra calcula em qual chunk + offset cair, e pula. Pode exigir resintetizar chunks à frente se ainda não estiverem em memória.
+4. **Highlight de palavra**: cada chunk recebe `offset_ms` acumulado. Os `WordBoundary` events do edge-tts (relativos ao chunk) são somados ao offset para virar timestamp absoluto. Um `Timer` Flet roda em ~50ms tickando e destacando a palavra atual em `text_area.py`. Ressincronizar com posição real do player a cada transição de chunk pra evitar deriva.
+5. **Atalhos de teclado** (via `on_keyboard_event` do Flet):
+   - **Espaço**: play / pause
+   - **Esc**: stop
+   - **← →**: seek ± 5s
+   - **↑ ↓**: volume ± 5%
+
+**Checkpoints:**
+- [ ] Texto longo começa a tocar antes de toda a síntese terminar (latência inicial < 3s)
+- [ ] Barra de progresso avança suavemente, com tempo correto no fim de cada chunk
+- [ ] Clicar na barra pula pra posição certa (testar pulando entre chunks)
+- [ ] Palavra atual fica destacada e acompanha o áudio sem deriva visível (validar com texto de 30s)
+- [ ] Todos os 5 atalhos de teclado funcionam (com janela em foco)
+- [ ] Race entre Stop + síntese paralela não trava o app (executar Stop 10x rapidamente em sequência durante uma leitura)
+- [ ] Teste de integração com `pytest-asyncio` cobre o `asyncio.Lock` do player
+
+---
 
 ### Fase 6 — Polimento visual
-- Tema dark mode refinado
-- Ícones e tipografia caprichada
+
+**Objetivo**: deixar o app com cara de produto, não de protótipo.
+
+**O que será feito:**
+1. **`ui/theme.py`**: definir paleta completa (background níveis 1/2/3, accent âmbar `#FFB300`, texto primário/secundário, vermelhos/verdes para erro/sucesso).
+2. **Tipografia**: fonte principal (Inter ou Roboto), tamanhos consistentes para títulos, corpo, controles.
+3. **Ícones**: usar `Material Icons` do Flet (`PLAY_ARROW`, `PAUSE`, `STOP`, `FOLDER_OPEN`, `SAVE`, `DELETE`).
+4. **Logo da abelha 🐝**: criar ícone PNG simples (256x256) para o app + ícone do `.dmg` da Fase 7.
+5. **Layout responsivo**: a janela tem tamanho mínimo (ex: 900x600) e os painéis se adaptam ao redimensionar.
+6. **Estados visuais**: hover/pressed em botões, cor diferente para botão Play ativo, loading spinners durante síntese.
+7. **Validação de Acessibilidade** (ver seção dedicada):
+   - Rodar `colour-contrast-checker` ou similar para validar contraste WCAG AA
+   - Testar com VoiceOver ativo
+
+**Checkpoints:**
+- [ ] Paleta de cores consistente em todos os componentes
+- [ ] Ícone do app visível no Dock do macOS (após Fase 7)
+- [ ] Botões reagem visualmente a hover/click
+- [ ] Spinner aparece durante síntese (não fica trancado parecendo travado)
+- [ ] Contraste WCAG AA validado em texto sobre todos os fundos
+- [ ] VoiceOver lê os labels dos botões corretamente
+
+---
 
 ### Fase 7 — Empacotamento macOS (uso pessoal)
-- `packaging/fizzy_bee.spec` (PyInstaller, build universal arm64+x86_64)
-- `packaging/build_dmg.sh` (gera `.app` + `.dmg` com `create-dmg`)
-- Bundle esperado: 80–200MB (Flet + Python + edge-tts)
-- **`.dmg` não-assinado**: ao abrir pela 1ª vez, usuário precisa autorizar em `Ajustes → Privacidade e Segurança` (decisão consciente — sem Apple Developer ID)
-- Documentar passo de "primeira execução" no README
-- ✅ **Resultado: instalador `.dmg` para uso pessoal/restrito**
+
+**Objetivo**: gerar um `.dmg` instalável.
+
+**O que será feito:**
+1. **`packaging/fizzy_bee.spec`**: arquivo de configuração do PyInstaller — entrypoint `main.py`, ícone, hidden imports para `just_playback`/`miniaudio`/`edge_tts`, builds universal arm64+x86_64.
+2. **`packaging/build_dmg.sh`**: script que roda `pyinstaller`, depois `create-dmg` para gerar `Fizzy Bee.dmg` com janela customizada (ícone do app à esquerda, atalho para `/Applications` à direita).
+3. **Documentação no `README.md`**: passo de primeira execução (autorizar em "Privacidade e Segurança" porque o `.dmg` não é assinado).
+4. **Teste em macOS limpo**: copiar o `.dmg` pra outra máquina (ou VM) e validar fluxo completo do zero.
+
+**Checkpoints:**
+- [ ] `bash packaging/build_dmg.sh` gera `Fizzy Bee.dmg` sem erros
+- [ ] O `.dmg` abre uma janela com o ícone e o atalho de Aplicações
+- [ ] Arrastar pra Aplicações instala normalmente
+- [ ] Na primeira execução, macOS pede autorização em "Privacidade e Segurança" (esperado)
+- [ ] Após autorizar, app abre e funciona em macOS limpo (sem Python instalado pelo usuário)
+- [ ] Bundle final dentro de 80–250MB
+
+---
 
 ### Fase 8 (futura/opcional) — Presets de voz
+
 Adiada até validar uso real da Fase 4. Presets seriam combinações nomeadas de (voz + velocidade), salvas em `presets.json`, exibidas como segunda aba do painel lateral.
+
+**Checkpoints (quando/se for implementada):**
+- [ ] Criar preset a partir das configurações atuais
+- [ ] Aplicar preset com 1 clique restaura voz + rate
+- [ ] Renomear e excluir preset
+- [ ] Persistência em `~/FizzyBee/presets.json`
+
+---
+
+## Regras de execução
+
+- **Avanço sequencial**: só começar a Fase N+1 depois que **todos** os checkpoints da Fase N estiverem marcados com `[x]`.
+- **Marcação dos checkpoints**: ao validar um checkpoint, alterar `[ ]` para `[x]` neste arquivo e fazer commit.
+- **Falha em checkpoint**: se algum não puder ser validado, **não pular** — corrigir o problema antes de seguir. Se for impossível corrigir, registrar o motivo neste arquivo e decidir se a fase precisa ser revisada.
+- **Commits por fase**: ao fechar uma fase com todos os checkpoints `[x]`, fazer um commit com mensagem `feat(faseN): descrição curta` (ou `chore(fase0): ...` para a preparação).
 
 ---
 
 ## Próximos passos
 
 1. ✅ Plano aprovado e salvo
-2. ⏭️ Criar `requirements.txt` com dependências
-3. ⏭️ Criar estrutura de pastas
-4. ⏭️ Implementar **Fase 1 (MVP)** — síntese básica + player + UI mínima
-5. ⏭️ Iterar pelas fases seguintes
+2. ⏭️ Iniciar **Fase 0 (Preparação do ambiente)**
+3. ⏭️ Iterar pelas fases seguintes, marcando checkpoints conforme validados
