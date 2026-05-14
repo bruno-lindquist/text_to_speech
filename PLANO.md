@@ -86,7 +86,7 @@ fizzy_bee/
 ├── ui/                        # Camada visual
 │   ├── app.py                 # Estrutura principal da janela
 │   ├── components/
-│   │   ├── text_area.py       # Área de texto com highlight
+│   │   ├── text_area.py       # Área de texto (highlight: Fase 5)
 │   │   ├── voice_controls.py  # Dropdowns e sliders de voz
 │   │   ├── player_controls.py # Play/pause/seek/salvar
 │   │   └── side_panel.py      # Painel lateral de histórico
@@ -127,10 +127,12 @@ fizzy_bee/
 
 - **Filtro por idioma** (dropdown 1): pt-BR, en-US, es-ES, etc.
 - **Escolha de voz** (dropdown 2): lista filtrada pelo idioma (ex: Francisca, Antonio, Brenda...)
-- **Velocidade (rate)**: slider de -50% a +100%
-- **Volume**: slider de ajuste
+- **Velocidade (rate)**: slider de -50% a +100% (parâmetro do edge-tts — exige nova síntese ao mudar)
+- **Volume**: slider de ajuste **do player local** (afeta `just_playback`, não a síntese — muda em tempo real, sem resintetizar)
 
 > **Pitch fora do MVP**: vozes neurais do edge-tts frequentemente ignoram ou distorcem o ajuste de pitch. Avaliar inclusão depois, com base na experiência real.
+>
+> **Por que volume é do player, não do edge-tts?** Volume do edge-tts vai como parâmetro de síntese — mudar significa **resintetizar tudo**, o que dá latência alta (especialmente com atalho `↑ ↓` da Fase 5). Volume do player é instantâneo. Trade-off aceito.
 
 ### Reprodução de áudio
 
@@ -191,9 +193,10 @@ Em vez de esperar todos os chunks serem sintetizados antes de tocar:
 | Falha de rede / rate limit do edge-tts | Timeout de 10s na requisição + retry com backoff exponencial (1s, 2s, 4s — máx 3 tentativas). Após falha definitiva: dialog com mensagem clara e botão "Tentar novamente". |
 | Arquivo corrompido / formato não suportado | Dialog: "Não foi possível ler este arquivo. Formatos suportados: TXT, PDF, DOCX, EPUB." |
 | edge-tts falha em uma voz | Mensagem específica: "Voz X indisponível, tente outra" |
-| Usuário clica Stop durante síntese | Task `asyncio` de síntese é cancelada **e** player atual é parado, sob proteção do `asyncio.Lock` do player (ver Concorrência) |
+| Usuário clica Stop durante síntese | Player é parado (`just_playback.stop()` síncrono), depois a task de síntese é cancelada — ver **Como Stop realmente para tudo** em Concorrência |
 | Primeira execução sem internet | App abre, mas usa **voz padrão hardcoded** (ex: `pt-BR-FranciscaNeural`) — listagem dinâmica de vozes só funciona quando houver rede |
-| Operações longas (livro inteiro) | Streaming progressivo evita espera inicial; indicador de progresso por chunk |
+| Tentativa de play sem internet (MVP) | Erro do edge-tts é capturado e mostrado como dialog: "Sem conexão — não foi possível sintetizar a voz." |
+| Operações longas (livro inteiro) | Até a Fase 4: usuário espera toda a síntese; a partir da Fase 5: streaming progressivo elimina espera inicial |
 
 ---
 
@@ -220,7 +223,29 @@ Todo o app usa **`asyncio`** (não `threading`), pelos motivos:
 - I/O (edge-tts, leitura de arquivo grande) → `async`
 - CPU/biblioteca síncrona pesada (extração de PDF longo) → `run_in_executor`
 - UI nunca bloqueia a janela
-- **Tasks de síntese são canceláveis** (`asyncio.Task.cancel()`) — Stop interrompe na hora
+- **Tasks de síntese são canceláveis** (`asyncio.Task.cancel()`) — interrompe o `await` da requisição
+
+### Como Stop realmente para tudo
+
+`asyncio.Task.cancel()` só cancela o `await` — **não** interrompe código Python rodando dentro de um `run_in_executor`. Como `just_playback.play_loop()` é síncrono e bloqueia o thread executor, a sequência correta de Stop é:
+
+1. Chamar `just_playback.stop()` (síncrono, do próprio player) → interrompe o thread executor
+2. Cancelar a task de síntese (`task.cancel()`) → interrompe a requisição ao edge-tts
+3. Aguardar a task encerrar com `await task` num `try/except CancelledError`
+4. Liberar o `asyncio.Lock`
+
+Documentar essa ordem é essencial — fazer só `task.cancel()` deixa o áudio tocando até o fim do buffer.
+
+### Função utilitária `ensure_user_dir()`
+
+Tanto `core/logger.py` (para `~/FizzyBee/logs/`) quanto `core/storage.py` (para `~/FizzyBee/`) precisam garantir que a pasta exista. Para evitar duplicação (DRY), há uma função utilitária em `core/storage.py`:
+
+```python
+def ensure_user_dir() -> Path:
+    """Retorna ~/FizzyBee/, criando-a se não existir."""
+```
+
+Ambos os módulos importam e usam.
 
 ### Sincronização do player
 
@@ -230,11 +255,13 @@ Estado do player (`playing`, `paused`, `position`, fila de chunks) é protegido 
 
 Handler de `SIGINT` (Ctrl+C) e evento `on_close` da janela Flet executam, **nesta ordem**:
 
-1. Parar player atual
-2. Salvar histórico em `history.json`
-3. Cancelar todas as tasks pendentes (`asyncio.all_tasks()`)
+1. Parar player atual (`just_playback.stop()` síncrono)
+2. Cancelar tasks pendentes (`asyncio.all_tasks()`) e aguardar até **2s** com `asyncio.wait_for` — assim qualquer `finally` que precise gravar estado (ex: marcar leitura como concluída) tem chance de rodar
+3. Salvar histórico em `history.json` (estado final, depois das tasks terminarem)
 4. Flush dos logs do loguru
 5. Sair
+
+> Ordem revertida em relação à versão anterior do plano: cancelar tasks **antes** de salvar histórico permite que `finally` blocks contribuam com estado final, e evita que uma task ainda escrevendo histórico crie corrida com o save do shutdown.
 
 ---
 
@@ -297,10 +324,10 @@ Implementação **incremental**. Cada fase entrega algo funcional e tem **checkp
 **Objetivo**: deixar o projeto pronto para receber código.
 
 **O que será feito:**
-1. Criar `requirements.txt` com as dependências congeladas: `flet`, `edge-tts`, `pypdf`, `python-docx`, `ebooklib`, `pysbd`, `just_playback`, `loguru`, `pytest`, `pytest-asyncio`, `pyinstaller`.
+1. Criar `requirements.txt` com as dependências congeladas: `flet`, `edge-tts`, `pypdf`, `python-docx`, `ebooklib`, `beautifulsoup4`, `pysbd`, `just_playback`, `loguru`, `pytest`, `pytest-asyncio`, `pyinstaller`.
 2. Criar a estrutura completa de pastas conforme a seção **Arquitetura** (`core/`, `core/extractors/`, `ui/`, `ui/components/`, `tests/fixtures/docs/`, `tests/fixtures/audio/`, `packaging/`).
 3. Criar `README.md` mínimo (nome do projeto + como instalar e rodar).
-4. Criar arquivos `__init__.py` vazios onde forem necessários para reconhecer pacotes Python.
+4. Criar arquivos `__init__.py` vazios em: `core/`, `core/extractors/`, `ui/`, `ui/components/`, `tests/`.
 5. Configurar `venv` local (`python -m venv .venv`) e instalar dependências (`pip install -r requirements.txt`).
 
 **Checkpoints:**
@@ -316,11 +343,11 @@ Implementação **incremental**. Cada fase entrega algo funcional e tem **checkp
 **Objetivo**: conseguir colar um texto na janela, escolher uma voz fixa e ouvir o áudio dentro do app.
 
 **O que será feito:**
-1. **`core/logger.py`**: configura o loguru uma única vez (detecta `sys.frozen` pra escolher INFO vs WARNING; cria pasta `~/FizzyBee/logs/` se não existir; rotação diária).
-2. **`core/storage.py`**: lê/escreve `~/FizzyBee/config.json` (apenas `default_voice` e `default_rate` no MVP); retorna defaults se o arquivo não existir.
-3. **`core/tts_engine.py`**: função `async synthesize(text, voice, rate) -> bytes` que chama `edge-tts` e retorna o MP3 completo do texto curto (sem chunking ainda).
-4. **`core/audio_player.py`**: classe `AudioPlayer` com `play(mp3_bytes)`, `pause()`, `stop()`, estado protegido por `asyncio.Lock`. Internamente usa `just_playback` em `run_in_executor`.
-5. **UI mínima Flet (`ui/app.py`)**: janela com área de texto, dropdown com 3 vozes pt-BR hardcoded (Francisca, Antonio, Brenda), botão "▶ Reproduzir", botão "⏹ Parar", botão "💾 Salvar MP3".
+1. **`core/storage.py`** (parte 1 — função utilitária): cria a função `ensure_user_dir() -> Path` que devolve `~/FizzyBee/`, criando se preciso. Importa também `load_config()`/`save_config()` lendo/escrevendo `~/FizzyBee/config.json` (apenas `default_voice` e `default_rate` no MVP); retorna defaults se o arquivo não existir.
+2. **`core/logger.py`**: configura o loguru uma única vez. Usa `ensure_user_dir()` para criar `~/FizzyBee/logs/`. Detecta `sys.frozen` pra escolher INFO vs WARNING; rotação diária, retenção de 7 dias.
+3. **`core/tts_engine.py`**: função `async synthesize(text, voice, rate) -> bytes` que chama `edge-tts` e retorna o MP3 completo do texto curto (sem chunking ainda). Trata exceções de rede e propaga para a UI mostrar dialog "Sem conexão — não foi possível sintetizar a voz."
+4. **`core/audio_player.py`**: classe `AudioPlayer` com `play(mp3_bytes)`, `pause()`, `stop()`, `set_volume(0.0-1.0)`. Estado protegido por `asyncio.Lock`. Internamente usa `just_playback` em `run_in_executor`. Método `stop()` chama `just_playback.stop()` síncrono antes de cancelar a task de síntese (ver Concorrência → Como Stop realmente para tudo).
+5. **UI mínima Flet (`ui/app.py`)**: janela com área de texto, dropdown com 3 vozes pt-BR hardcoded — **`FranciscaNeural`, `AntonioNeural`, `ThalitaNeural`** (validar com `edge-tts --list-voices` antes de hardcodar), botão "▶ Reproduzir", botão "⏹ Parar", botão "💾 Salvar MP3" e **slider de volume local** (já presente no MVP, para validar o caminho do `set_volume`).
 6. **`main.py`**: ponto de entrada que inicializa logger e roda o Flet app em modo asyncio.
 7. **Validação empírica** (parte essencial da fase, não pode ser pulada):
    - Sintetizar o mesmo texto 3 vezes e checar com `ffprobe` (ou módulo `mutagen`) se sample rate e canais batem entre as 3 amostras → valida hipótese da concatenação binária
@@ -328,10 +355,13 @@ Implementação **incremental**. Cada fase entrega algo funcional e tem **checkp
 
 **Checkpoints:**
 - [ ] Cola-se texto, clica play, ouve o áudio com a voz selecionada
-- [ ] Botão Stop interrompe a reprodução na hora
+- [ ] Botão Stop interrompe a reprodução **em até 200ms** (validar empiricamente que `just_playback.stop()` síncrono é chamado antes do cancel da task)
+- [ ] Slider de volume muda o nível do áudio em tempo real (sem resintetizar)
 - [ ] Botão "Salvar MP3" gera arquivo que toca corretamente em outro player do SO
+- [ ] Tentativa de play sem internet mostra dialog "Sem conexão..." em vez de crashar
 - [ ] Logs aparecem em `~/FizzyBee/logs/fizzy_bee.log`
-- [ ] **Validação empírica 1**: três síntese consecutivas têm mesmo sample rate/canais (anotar no commit)
+- [ ] As 3 vozes hardcoded **realmente existem** no catálogo do edge-tts (validar com `edge-tts --list-voices | grep pt-BR`)
+- [ ] **Validação empírica 1**: três sínteses consecutivas têm mesmo sample rate/canais (anotar no commit)
 - [ ] **Validação empírica 2**: PyInstaller gera `.app` funcional (sem testes de UI extensivos, só confirma que abre e toca)
 - [ ] `pytest` roda os testes unitários de `tts_engine` (com mock) e `audio_player` (métodos puros) sem falhas
 
@@ -348,7 +378,7 @@ Implementação **incremental**. Cada fase entrega algo funcional e tem **checkp
 4. **`core/extractors/docx.py`**: usa `python-docx` para extrair parágrafos.
 5. **`core/extractors/epub.py`**: usa `ebooklib` + `BeautifulSoup` para extrair texto de cada item HTML do EPUB.
 6. **`core/text_chunker.py`**: função `chunk(text, language, max_chars=3000) -> list[str]` usando `pysbd`. Junta frases até chegar perto do limite, fecha o chunk, abre o próximo.
-7. **`tts_engine.py`** ganha modo "sintetiza por chunks": função `async synthesize_chunks(chunks: list[str], voice, rate) -> AsyncIterator[bytes]` que retorna os MP3s de cada chunk (ainda **sem** streaming progressivo — Fase 1.5 do player junta tudo em memória antes de tocar).
+7. **`tts_engine.py`** ganha modo "sintetiza por chunks": função `async synthesize_chunks(chunks: list[str], voice, rate) -> AsyncIterator[bytes]` que retorna os MP3s de cada chunk (ainda **sem** streaming progressivo — comportamento intermediário: o player junta tudo em memória antes de tocar; streaming progressivo só chega na Fase 5).
 8. **`audio_player.py`** ganha capacidade de tocar uma fila de MP3s em sequência.
 9. **UI**: botão "📁 Abrir arquivo" com diálogo do SO. Tentar implementar drag-and-drop e validar; se não funcionar bem no Flet em macOS, deixar só o botão.
 10. **Calibração empírica do limite de chunk**: testar com texto de 5000, 10000, 20000 chars; medir tempo de resposta do edge-tts; ajustar `max_chars` se preciso.
@@ -358,7 +388,7 @@ Implementação **incremental**. Cada fase entrega algo funcional e tem **checkp
 - [ ] Abrir um `.pdf` de pelo menos 3 páginas e ouvir
 - [ ] Abrir um `.docx` simples e ouvir
 - [ ] Abrir um `.epub` (qualquer livro pequeno em domínio público) e ouvir
-- [ ] `pysbd` divide texto com abreviações ("Sr. Silva foi ao Dr. Mendes.") em **uma única frase**, não duas
+- [ ] `pysbd` respeita abreviações: "Sr. Silva foi ao Dr. Mendes. Depois voltou para casa." vira **2 frases** ("Sr. Silva foi ao Dr. Mendes." + "Depois voltou para casa."), **não 4**
 - [ ] Drag-and-drop funciona OU está documentado como desabilitado no README
 - [ ] Limite ideal de `max_chars` calibrado e anotado no `text_chunker.py`
 - [ ] Testes de `extractors/` passam com fixtures em `tests/fixtures/docs/`
@@ -372,17 +402,17 @@ Implementação **incremental**. Cada fase entrega algo funcional e tem **checkp
 **O que será feito:**
 1. **`tts_engine.py`** ganha função `async list_voices() -> list[Voice]` que chama `edge_tts.list_voices()` e cacheia o resultado em memória durante a sessão.
 2. **Fallback offline**: voz padrão hardcoded (`pt-BR-FranciscaNeural`) usada se `list_voices()` falhar (sem internet na primeira execução).
-3. **`ui/components/voice_controls.py`**: componente Flet com dois dropdowns (idioma → voz) + dois sliders (velocidade -50%/+100%, volume 0-100%).
+3. **`ui/components/voice_controls.py`**: componente Flet com dois dropdowns (idioma → voz) + slider de **velocidade** (-50%/+100%). O slider de volume continua em `player_controls.py` (volume é do player, ver Controles de voz).
 4. **Filtro de idioma**: extrai locales únicos da lista de vozes (`pt-BR`, `en-US`, `es-ES`, etc.), ordena alfabeticamente, mostra no primeiro dropdown.
 5. **Filtro de voz**: ao escolher idioma, segundo dropdown popula com as vozes daquele locale.
-6. **Aplicar parâmetros**: rate e volume vão como `rate=+10%`, `volume=-5%` na chamada do `edge_tts.Communicate` (formato exigido pela biblioteca).
+6. **Aplicar rate ao edge-tts**: rate vai como `rate=+10%` na chamada do `edge_tts.Communicate` (formato exigido pela biblioteca). **Volume NÃO vai pro edge-tts** — é aplicado em `AudioPlayer.set_volume()`.
 7. **Persistência**: voz, idioma, rate e volume escolhidos são salvos em `config.json` ao mudar, e restaurados na próxima abertura.
 
 **Checkpoints:**
-- [ ] Lista completa de vozes carrega (>30 vozes em pt-BR/en-US disponíveis)
+- [ ] Lista de vozes carrega com **pelo menos 5 vozes em pt-BR e 5 em en-US** disponíveis
 - [ ] Trocar idioma filtra as vozes corretamente
-- [ ] Slider de velocidade muda o ritmo (testar -25%, 0%, +25%, +50%)
-- [ ] Slider de volume muda o nível do áudio audivelmente
+- [ ] Slider de velocidade muda o ritmo (testar -25%, 0%, +25%, +50%) — exige nova síntese, OK
+- [ ] Slider de volume continua mudando o nível **em tempo real** (sem resintetizar) — confirma que volume é do player, não do edge-tts
 - [ ] Sem internet na primeira execução, app abre e usa Francisca como fallback (validar matando rede temporariamente)
 - [ ] Preferências persistem entre reinicializações do app
 
@@ -396,43 +426,62 @@ Implementação **incremental**. Cada fase entrega algo funcional e tem **checkp
 1. **`core/storage.py`** ganha `save_history_entry(text, voice, timestamp)` e `load_history() -> list[Entry]`. Limite **FIFO de 50 entradas** — a entrada mais antiga é descartada quando uma nova passa do limite.
 2. **Cada entrada** guarda: snippet do texto (primeiros 80 chars), texto completo, voz usada, rate, timestamp ISO 8601.
 3. **`ui/components/side_panel.py`**: painel lateral à esquerda com lista de cartões (snippet + data + voz). Clicar reabre o texto e os controles na janela principal.
-4. **Salvamento automático**: cada vez que o play é acionado, a entrada é adicionada ao histórico (após começar a tocar, não antes).
-5. **Botão "🗑 Limpar histórico"** no rodapé do painel, com diálogo de confirmação.
-6. **Shutdown limpo**: histórico é salvo na sequência definida em **Concorrência → Shutdown limpo**.
+4. **Salvamento incremental ao play**: a cada play, a entrada é gravada em disco logo após o player começar a tocar (não fica em memória esperando shutdown). Garante que crashes não percam histórico.
+5. **No shutdown** (ver Concorrência): apenas re-salva o estado final caso alguma task tenha modificado entradas pendentes (ex: marcar conclusão). Não é o "save principal" — esse já aconteceu no play.
+6. **Botão "🗑 Limpar histórico"** no rodapé do painel, com diálogo de confirmação.
 
 **Checkpoints:**
 - [ ] Após 3 leituras, o painel mostra 3 cartões na ordem do mais recente para o mais antigo
 - [ ] Clicar num cartão reabre o texto na área principal com a mesma voz/rate
 - [ ] Histórico para de crescer ao chegar em 50 entradas (FIFO funcionando)
 - [ ] Fechar e reabrir o app preserva o histórico
+- [ ] **Resistência a crash**: matar o processo (`kill -9`) durante uma leitura — ao reabrir, a entrada do histórico **já está salva** (graças ao salvamento incremental)
 - [ ] "Limpar histórico" zera a lista após confirmação
 - [ ] Teste de `storage.py` valida limite FIFO e defaults
 
 ---
 
-### Fase 5 — Player avançado + atalhos
+### Fase 5a — Streaming progressivo + barra de progresso
 
-**Objetivo**: dar ao player capacidades profissionais — barra de progresso navegável, palavra destacada e atalhos de teclado.
+**Objetivo**: começar a tocar antes da síntese completa terminar, e exibir progresso da leitura.
 
 **O que será feito:**
 1. **Streaming progressivo** (substitui o "tocar fila inteira" da Fase 2): chunk N+1 começa a sintetizar assim que chunk N inicia a reprodução. Implementação com `asyncio.Queue` entre `tts_engine` e `audio_player`.
-2. **Barra de progresso (`ui/components/player_controls.py`)**: mostra tempo decorrido / tempo total da fila completa de chunks (soma das durações conhecidas + estimativa para chunks ainda não sintetizados).
-3. **Seek**: clicar na barra calcula em qual chunk + offset cair, e pula. Pode exigir resintetizar chunks à frente se ainda não estiverem em memória.
-4. **Highlight de palavra**: cada chunk recebe `offset_ms` acumulado. Os `WordBoundary` events do edge-tts (relativos ao chunk) são somados ao offset para virar timestamp absoluto. Um `Timer` Flet roda em ~50ms tickando e destacando a palavra atual em `text_area.py`. Ressincronizar com posição real do player a cada transição de chunk pra evitar deriva.
-5. **Atalhos de teclado** (via `on_keyboard_event` do Flet):
-   - **Espaço**: play / pause
-   - **Esc**: stop
-   - **← →**: seek ± 5s
-   - **↑ ↓**: volume ± 5%
+2. **Barra de progresso (`ui/components/player_controls.py`)**: mostra tempo decorrido / tempo total da fila de chunks.
+   - **Cálculo de "tempo total"**: soma das durações dos chunks **já sintetizados** + estimativa para os pendentes.
+   - **Critério de estimativa**: tempo médio observado dos chunks já sintetizados × (número de chunks restantes). Recalcula a cada chunk concluído. Antes de qualquer chunk ficar pronto, mostra apenas "calculando…" sem total.
+3. **Seek**: clicar na barra calcula em qual chunk + offset cair, e pula.
+   - **Se o chunk-alvo já está sintetizado**: pulo instantâneo (apenas `just_playback.seek()`).
+   - **Se o chunk-alvo ainda não está sintetizado**: spinner com texto "Carregando…" enquanto sintetiza; usuário pode cancelar (Stop) durante a espera. **Não bloqueia a UI** — síntese roda em task asyncio.
 
 **Checkpoints:**
 - [ ] Texto longo começa a tocar antes de toda a síntese terminar (latência inicial < 3s)
 - [ ] Barra de progresso avança suavemente, com tempo correto no fim de cada chunk
-- [ ] Clicar na barra pula pra posição certa (testar pulando entre chunks)
-- [ ] Palavra atual fica destacada e acompanha o áudio sem deriva visível (validar com texto de 30s)
-- [ ] Todos os 5 atalhos de teclado funcionam (com janela em foco)
+- [ ] Clicar num ponto já sintetizado: pulo é instantâneo
+- [ ] Clicar num ponto ainda não sintetizado: spinner aparece e some quando o áudio começa
 - [ ] Race entre Stop + síntese paralela não trava o app (executar Stop 10x rapidamente em sequência durante uma leitura)
 - [ ] Teste de integração com `pytest-asyncio` cobre o `asyncio.Lock` do player
+
+---
+
+### Fase 5b — Highlight de palavra + atalhos de teclado
+
+**Objetivo**: destacar a palavra sendo lida no texto e oferecer controle por teclado.
+
+**O que será feito:**
+1. **Highlight de palavra**: cada chunk recebe `offset_ms` acumulado (soma das durações dos chunks anteriores, **já conhecidas** porque o chunk N só ganha highlight depois que sintetizou). Os `WordBoundary` events do edge-tts (relativos ao chunk) são somados ao offset para virar timestamp absoluto.
+2. **Loop de tick (~50ms)**: implementado via `asyncio.create_task` com `asyncio.sleep(0.05)` num while interno do componente (Flet não tem `Timer` nativo). A cada tick, lê posição do player e busca a palavra atual no índice. Ressincronizar com posição real do player a cada transição de chunk pra evitar deriva.
+3. **Atalhos de teclado** (via `on_keyboard_event` do Flet — confirmar API exata na implementação):
+   - **Espaço**: play / pause
+   - **Esc**: stop
+   - **← →**: seek ± 5s
+   - **↑ ↓**: volume ± 5% (do player local, ver Controles de voz)
+
+**Checkpoints:**
+- [ ] Palavra atual fica destacada e acompanha o áudio sem deriva visível (validar com texto de 30s)
+- [ ] Todos os 5 atalhos de teclado funcionam (com janela em foco)
+- [ ] Atalho ↑/↓ muda volume **em tempo real**, sem nova síntese
+- [ ] Loop de tick não dispara quando o player está pausado/parado (evitar CPU à toa)
 
 ---
 
@@ -453,11 +502,11 @@ Implementação **incremental**. Cada fase entrega algo funcional e tem **checkp
 
 **Checkpoints:**
 - [ ] Paleta de cores consistente em todos os componentes
-- [ ] Ícone do app visível no Dock do macOS (após Fase 7)
 - [ ] Botões reagem visualmente a hover/click
 - [ ] Spinner aparece durante síntese (não fica trancado parecendo travado)
 - [ ] Contraste WCAG AA validado em texto sobre todos os fundos
 - [ ] VoiceOver lê os labels dos botões corretamente
+- [ ] Ícone PNG da abelha (256x256) existe em `packaging/` para uso na Fase 7
 
 ---
 
@@ -466,18 +515,20 @@ Implementação **incremental**. Cada fase entrega algo funcional e tem **checkp
 **Objetivo**: gerar um `.dmg` instalável.
 
 **O que será feito:**
-1. **`packaging/fizzy_bee.spec`**: arquivo de configuração do PyInstaller — entrypoint `main.py`, ícone, hidden imports para `just_playback`/`miniaudio`/`edge_tts`, builds universal arm64+x86_64.
+1. **`packaging/fizzy_bee.spec`**: arquivo de configuração do PyInstaller — entrypoint `main.py`, ícone, hidden imports para `just_playback`/`miniaudio`/`edge_tts`. **Arquitetura-alvo**: por padrão gera build da arquitetura nativa do Mac (arm64 OU x86_64). Universal binary é desejável mas **não obrigatório** — PyInstaller não suporta universal nativamente (precisa `lipo` manual) e algumas C-extensions (como `miniaudio`) podem não ter wheel universal. Documentar arquitetura gerada no README.
 2. **`packaging/build_dmg.sh`**: script que roda `pyinstaller`, depois `create-dmg` para gerar `Fizzy Bee.dmg` com janela customizada (ícone do app à esquerda, atalho para `/Applications` à direita).
 3. **Documentação no `README.md`**: passo de primeira execução (autorizar em "Privacidade e Segurança" porque o `.dmg` não é assinado).
-4. **Teste em macOS limpo**: copiar o `.dmg` pra outra máquina (ou VM) e validar fluxo completo do zero.
+4. **Teste em macOS limpo** (*best-effort*): copiar o `.dmg` pra outra máquina/VM se possível; se não, criar nova conta de usuário no mesmo Mac e testar lá.
 
 **Checkpoints:**
 - [ ] `bash packaging/build_dmg.sh` gera `Fizzy Bee.dmg` sem erros
 - [ ] O `.dmg` abre uma janela com o ícone e o atalho de Aplicações
 - [ ] Arrastar pra Aplicações instala normalmente
+- [ ] **Ícone do app visível no Dock** do macOS após instalar
 - [ ] Na primeira execução, macOS pede autorização em "Privacidade e Segurança" (esperado)
-- [ ] Após autorizar, app abre e funciona em macOS limpo (sem Python instalado pelo usuário)
-- [ ] Bundle final dentro de 80–250MB
+- [ ] Após autorizar, app abre e funciona em macOS limpo (sem Python instalado pelo usuário) — validar em outra conta de usuário OU VM
+- [ ] Bundle final mede entre **80–250MB**; se ultrapassar, investigar dependências desnecessárias antes de aceitar a fase
+- [ ] Arquitetura gerada (arm64 ou x86_64) documentada no README
 
 ---
 
@@ -498,7 +549,7 @@ Adiada até validar uso real da Fase 4. Presets seriam combinações nomeadas de
 - **Avanço sequencial**: só começar a Fase N+1 depois que **todos** os checkpoints da Fase N estiverem marcados com `[x]`.
 - **Marcação dos checkpoints**: ao validar um checkpoint, alterar `[ ]` para `[x]` neste arquivo e fazer commit.
 - **Falha em checkpoint**: se algum não puder ser validado, **não pular** — corrigir o problema antes de seguir. Se for impossível corrigir, registrar o motivo neste arquivo e decidir se a fase precisa ser revisada.
-- **Commits por fase**: ao fechar uma fase com todos os checkpoints `[x]`, fazer um commit com mensagem `feat(faseN): descrição curta` (ou `chore(fase0): ...` para a preparação).
+- **Commits por fase**: ao fechar uma fase com todos os checkpoints `[x]`, fazer um commit com mensagem `feat(faseN): descrição curta` (ou `chore(fase0): ...` para a preparação). Para fases divididas, usar sufixo: `feat(fase5a): streaming progressivo`.
 
 ---
 
