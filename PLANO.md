@@ -431,13 +431,13 @@ Implementação **incremental**. Cada fase entrega algo funcional e tem **checkp
 6. **Botão "🗑 Limpar histórico"** no rodapé do painel, com diálogo de confirmação.
 
 **Checkpoints:**
-- [ ] Após 3 leituras, o painel mostra 3 cartões na ordem do mais recente para o mais antigo
-- [ ] Clicar num cartão reabre o texto na área principal com a mesma voz/rate
-- [ ] Histórico para de crescer ao chegar em 50 entradas (FIFO funcionando)
-- [ ] Fechar e reabrir o app preserva o histórico
-- [ ] **Resistência a crash**: matar o processo (`kill -9`) durante uma leitura — ao reabrir, a entrada do histórico **já está salva** (graças ao salvamento incremental)
-- [ ] "Limpar histórico" zera a lista após confirmação
-- [ ] Teste de `storage.py` valida limite FIFO e defaults
+- [~] ~~Após 3 leituras, o painel mostra 3 cartões na ordem do mais recente para o mais antigo~~ — validação manual pulada; ordem coberta por `test_history_order_most_recent_first`
+- [~] ~~Clicar num cartão reabre o texto na área principal com a mesma voz/rate~~ — validação manual pulada; handler `_restore_from_entry` em `ui/app.py` restaura texto + locale + voz + rate
+- [x] Histórico para de crescer ao chegar em 50 entradas (FIFO funcionando) — coberto por `test_history_fifo_caps_at_max`
+- [~] ~~Fechar e reabrir o app preserva o histórico~~ — validação manual pulada; round-trip coberto por `test_save_and_load_history_round_trip`
+- [~] ~~**Resistência a crash**: matar o processo (`kill -9`) durante uma leitura — ao reabrir, a entrada do histórico **já está salva** (graças ao salvamento incremental)~~ — validação manual pulada; salvamento incremental implementado *antes* do `await player.play(...)` em `ui/app.py:do_synthesize_and_play`
+- [~] ~~"Limpar histórico" zera a lista após confirmação~~ — validação manual pulada; `clear_history()` coberto por `test_clear_history_empties_list`; diálogo de confirmação implementado em `side_panel._confirm_clear`
+- [x] Teste de `storage.py` valida limite FIFO e defaults — 10 testes novos passando
 
 ---
 

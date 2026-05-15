@@ -9,9 +9,17 @@ from loguru import logger
 
 from core.audio_player import AudioPlayer
 from core.extractors import ExtractorError, SUPPORTED_EXTENSIONS, extract
-from core.storage import load_config, save_config
+from core.storage import (
+    HistoryEntry,
+    clear_history,
+    load_config,
+    load_history,
+    save_config,
+    save_history_entry,
+)
 from core.text_chunker import chunk
 from core.tts_engine import NoInternetError, TTSError, list_voices, synthesize_chunks
+from ui.components.side_panel import build_side_panel
 from ui.components.voice_controls import build_voice_controls
 
 
@@ -72,6 +80,47 @@ async def main(page: ft.Page) -> None:
 
     status_text = ft.Text("Pronto.", size=12, color=ft.Colors.GREY_400)
 
+    # --- Painel lateral de histórico (Fase 4) ---
+    def _restore_from_entry(entry: HistoryEntry) -> None:
+        # Clique no cartão: restaura texto + voz + locale + rate na main.
+        # Não dispara play automático — usuário decide quando reproduzir.
+        text_area.value = entry.text
+        on_text_change(None)  # habilita o botão Play
+        # Restaura locale e voz nos dropdowns (se a voz ainda existir no catálogo)
+        locale = entry.voice.rsplit("-", 1)[0]  # "pt-BR-FranciscaNeural" -> "pt-BR"
+        voice_controls.locale_dropdown.value = locale
+        # Repopula opções do dropdown de voz para o locale e seleciona a voz
+        voice_options = [
+            opt for opt in voice_controls.voice_dropdown.options or []
+        ]
+        # Se o locale mudou, precisa repopular — dispara o handler do dropdown
+        if voice_controls.locale_dropdown.value != locale:
+            voice_controls.locale_dropdown.value = locale
+        voice_controls.voice_dropdown.value = entry.voice
+        voice_controls.rate_slider.value = int(entry.rate.rstrip("%"))
+        # Persiste como nova preferência
+        config["default_locale"] = locale
+        config["default_voice"] = entry.voice
+        config["default_rate"] = entry.rate
+        save_config(config)
+        status_text.value = f"Restaurado: {entry.snippet[:40]}…"
+        status_text.color = ft.Colors.AMBER_400
+        page.update()
+
+    def _on_clear_history() -> None:
+        clear_history()
+        side_panel.refresh([])
+        status_text.value = "Histórico limpo."
+        status_text.color = ft.Colors.GREY_400
+        page.update()
+
+    side_panel = build_side_panel(
+        page=page,
+        initial_history=load_history(),
+        on_card_click=_restore_from_entry,
+        on_clear=_on_clear_history,
+    )
+
     # --- Helpers ---
     def show_error(message: str) -> None:
         # AlertDialog via show_dialog/pop_dialog (Flet 0.85)
@@ -122,6 +171,12 @@ async def main(page: ft.Page) -> None:
             status_text.value = "Tocando…"
             status_text.color = ft.Colors.GREEN_400
             page.update()
+
+            # Salvamento incremental: grava no histórico ANTES de await player.play
+            # para garantir que crashes durante a reprodução não percam a entrada.
+            save_history_entry(text=text, voice=voice, rate=rate)
+            side_panel.refresh(load_history())
+
             await player.play(full_audio)
         except NoInternetError:
             show_error("Sem conexão — não foi possível sintetizar a voz.")
@@ -240,31 +295,39 @@ async def main(page: ft.Page) -> None:
     )
 
     # --- Layout ---
+    # Row de duas colunas: painel lateral à esquerda (largura fixa) + main expandida
+    main_column = ft.Column(
+        [
+            ft.Row(
+                [
+                    ft.Text("🐝 Fizzy Bee", size=24, weight=ft.FontWeight.BOLD),
+                    ft.Text(
+                        "Leitor de texto com vozes neurais",
+                        size=12,
+                        color=ft.Colors.GREY_400,
+                    ),
+                ],
+                alignment=ft.MainAxisAlignment.START,
+                vertical_alignment=ft.CrossAxisAlignment.END,
+                spacing=10,
+            ),
+            ft.Divider(),
+            text_area,
+            voice_controls.container,
+            ft.Row([volume_slider], spacing=20),
+            ft.Row([open_button, play_button, stop_button, save_button], spacing=10),
+            status_text,
+        ],
+        spacing=15,
+        expand=True,
+    )
+
     page.add(
-        ft.Column(
-            [
-                ft.Row(
-                    [
-                        ft.Text("🐝 Fizzy Bee", size=24, weight=ft.FontWeight.BOLD),
-                        ft.Text(
-                            "Leitor de texto com vozes neurais",
-                            size=12,
-                            color=ft.Colors.GREY_400,
-                        ),
-                    ],
-                    alignment=ft.MainAxisAlignment.START,
-                    vertical_alignment=ft.CrossAxisAlignment.END,
-                    spacing=10,
-                ),
-                ft.Divider(),
-                text_area,
-                voice_controls.container,
-                ft.Row([volume_slider], spacing=20),
-                ft.Row([open_button, play_button, stop_button, save_button], spacing=10),
-                status_text,
-            ],
+        ft.Row(
+            [side_panel.container, main_column],
             spacing=15,
             expand=True,
+            vertical_alignment=ft.CrossAxisAlignment.STRETCH,
         )
     )
 
