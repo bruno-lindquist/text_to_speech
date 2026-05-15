@@ -354,16 +354,16 @@ Implementação **incremental**. Cada fase entrega algo funcional e tem **checkp
    - Fazer PyInstaller experimental do MVP e abrir o `.app` em macOS limpo → confirma que `just_playback`/`miniaudio` empacotam
 
 **Checkpoints:**
-- [ ] Cola-se texto, clica play, ouve o áudio com a voz selecionada
-- [ ] Botão Stop interrompe a reprodução **em até 200ms** (validar empiricamente que `just_playback.stop()` síncrono é chamado antes do cancel da task)
-- [ ] Slider de volume muda o nível do áudio em tempo real (sem resintetizar)
-- [ ] Botão "Salvar MP3" gera arquivo que toca corretamente em outro player do SO
-- [ ] Tentativa de play sem internet mostra dialog "Sem conexão..." em vez de crashar
-- [ ] Logs aparecem em `~/FizzyBee/logs/fizzy_bee.log`
-- [ ] As 3 vozes hardcoded **realmente existem** no catálogo do edge-tts (validar com `edge-tts --list-voices | grep pt-BR`)
-- [ ] **Validação empírica 1**: três sínteses consecutivas têm mesmo sample rate/canais (anotar no commit)
-- [ ] **Validação empírica 2**: PyInstaller gera `.app` funcional (sem testes de UI extensivos, só confirma que abre e toca)
-- [ ] `pytest` roda os testes unitários de `tts_engine` (com mock) e `audio_player` (métodos puros) sem falhas
+- [x] Cola-se texto, clica play, ouve o áudio com a voz selecionada
+- [x] Botão Stop interrompe a reprodução **em até 200ms** (validar empiricamente que `just_playback.stop()` síncrono é chamado antes do cancel da task)
+- [x] Slider de volume muda o nível do áudio em tempo real (sem resintetizar)
+- [x] Botão "Salvar MP3" gera arquivo que toca corretamente em outro player do SO
+- [x] Tentativa de play sem internet mostra dialog "Sem conexão..." em vez de crashar
+- [x] Logs aparecem em `~/FizzyBee/logs/fizzy_bee.log`
+- [x] As 3 vozes hardcoded **realmente existem** no catálogo do edge-tts (Francisca, Antonio, ThalitaMultilingual)
+- [x] **Validação empírica 1**: três sínteses consecutivas têm mesmo sample rate/canais (todas 24kHz, mono, 48 kbps)
+- [x] **Validação empírica 2**: PyInstaller gera `.app` funcional (30MB, abre e roda; runtime do Flet fica em cache externo `~/.flet/client/` — empacotar para `.dmg` é tarefa da Fase 7). Armadilhas descobertas: precisou de `_cffi_backend`/`cffi` em hiddenimports (just_playback usa cffi), e `collect_data_files("flet")` para `icons.json` e outros recursos
+- [x] `pytest` roda os testes unitários de `tts_engine` (com mock) e `audio_player` (métodos puros) sem falhas (21 passando, 1 deselected)
 
 ---
 
