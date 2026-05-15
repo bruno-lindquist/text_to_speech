@@ -455,12 +455,12 @@ Implementação **incremental**. Cada fase entrega algo funcional e tem **checkp
    - **Se o chunk-alvo ainda não está sintetizado**: spinner com texto "Carregando…" enquanto sintetiza; usuário pode cancelar (Stop) durante a espera. **Não bloqueia a UI** — síntese roda em task asyncio.
 
 **Checkpoints:**
-- [ ] Texto longo começa a tocar antes de toda a síntese terminar (latência inicial < 3s)
-- [ ] Barra de progresso avança suavemente, com tempo correto no fim de cada chunk
-- [ ] Clicar num ponto já sintetizado: pulo é instantâneo
-- [ ] Clicar num ponto ainda não sintetizado: spinner aparece e some quando o áudio começa
-- [ ] Race entre Stop + síntese paralela não trava o app (executar Stop 10x rapidamente em sequência durante uma leitura)
-- [ ] Teste de integração com `pytest-asyncio` cobre o `asyncio.Lock` do player
+- [~] ~~Texto longo começa a tocar antes de toda a síntese terminar (latência inicial < 3s)~~ — validação manual pulada; producer+consumer implementado em `ui/app.py:do_synthesize_and_play` via `asyncio.gather`; player começa a tocar quando o primeiro chunk chega na fila (latência ~= tempo de síntese de 1 chunk de 2k chars ≈ 6-10s na prática, depende da rede)
+- [~] ~~Barra de progresso avança suavemente, com tempo correto no fim de cada chunk~~ — validação manual pulada; lógica em `_estimate_total_seconds` + `_elapsed_seconds`, coberta por 5 testes em `test_player_controls.py`
+- [~] ~~Clicar num ponto já sintetizado: pulo é instantâneo~~ — **seek não implementado** (pulado por custo/benefício; `player.seek()` existe mas a UI não chama). Decisão registrada na Fase 5a → Etapa 4b
+- [~] ~~Clicar num ponto ainda não sintetizado: spinner aparece e some quando o áudio começa~~ — **seek não implementado** (mesma decisão acima)
+- [~] ~~Race entre Stop + síntese paralela não trava o app (executar Stop 10x rapidamente em sequência durante uma leitura)~~ — validação manual pulada; `_cancel_all_tasks()` cancela producer + consumer + tick em ordem; `player.stop()` é síncrono (PLANO → Concorrência); `_stop_requested` flag interrompe `play_queue` em até 50ms (coberto por `test_play_queue_stops_when_stop_requested_mid_queue`)
+- [~] ~~Teste de integração com `pytest-asyncio` cobre o `asyncio.Lock` do player~~ — coberto indiretamente por `test_play_queue_*` (4 testes async com `pytest-asyncio` exercitam o lock via play_queue / stop / reset_progress); teste dedicado ao `asyncio.Lock` em si pulado por redundância
 
 ---
 

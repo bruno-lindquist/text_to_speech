@@ -10,7 +10,7 @@ Aplicativo Python + Flet que sintetiza texto em fala usando as vozes neurais da 
 
 ### Limitações conhecidas
 
-- **Drag-and-drop de arquivos do SO está desabilitado.** O Flet 0.85 não expõe evento de drop de arquivos do sistema operacional na `Page` (os controles `Draggable`/`DragTarget` funcionam apenas dentro da própria UI). Para abrir arquivos, use o botão **"📁 Abrir arquivo"**.
+- **Drag-and-drop de arquivos do SO está desabilitado.** Limitação arquitetural do Flet: o app Python e a janela nativa (`flet-desktop-full`) rodam em processos separados, comunicando-se via UDS. A `NSWindow` que aceitaria o drop está no processo filho — fora do alcance do nosso processo Python (PyObjC inclusive). Para abrir arquivos, use o botão **"📁 Abrir arquivo"**.
 
 ## Requisitos
 

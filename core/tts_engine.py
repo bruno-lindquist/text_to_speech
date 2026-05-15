@@ -144,8 +144,36 @@ async def synthesize_chunks(
 ) -> AsyncIterator[bytes]:
     # Sintetiza cada chunk em sequência e devolve seus MP3s como AsyncIterator.
     # Fase 2: o caller acumula tudo antes de tocar (sem streaming progressivo).
-    # Fase 5: vira streaming progressivo via asyncio.Queue.
+    # Fase 5: vira streaming progressivo via asyncio.Queue (ver stream_to_queue abaixo).
     for i, chunk_text in enumerate(text_chunks):
         logger.info(f"Sintetizando chunk {i + 1}/{len(text_chunks)} ({len(chunk_text)} chars)")
         audio = await synthesize(chunk_text, voice, rate=rate, timeout=timeout)
         yield audio
+
+
+async def stream_to_queue(
+    text_chunks: list[str],
+    voice: str,
+    queue: "asyncio.Queue[bytes | None]",
+    rate: str = "+0%",
+    timeout: float = 20.0,
+) -> None:
+    # Produtor para o streaming progressivo da Fase 5a:
+    # sintetiza cada chunk e coloca na fila assim que pronto. O consumidor
+    # (AudioPlayer.play_queue) começa a tocar o primeiro chunk enquanto
+    # os próximos ainda estão sendo sintetizados.
+    #
+    # Sempre coloca o sentinela QUEUE_END (None) na fila no `finally`, para
+    # garantir que o consumidor não fique bloqueado em await queue.get() se:
+    #   - a síntese falhou (TTSError / NoInternetError)
+    #   - a task foi cancelada (Stop)
+    # A exceção em si é re-levantada para o caller via task.exception().
+    try:
+        async for audio in synthesize_chunks(
+            text_chunks, voice, rate=rate, timeout=timeout
+        ):
+            await queue.put(audio)
+    finally:
+        # QUEUE_END = None — definido em audio_player.py mas usamos None
+        # diretamente aqui para evitar dependência circular.
+        await queue.put(None)
