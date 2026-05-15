@@ -8,15 +8,11 @@ import flet as ft
 from loguru import logger
 
 from core.audio_player import AudioPlayer
+from core.extractors import ExtractorError, SUPPORTED_EXTENSIONS, extract
 from core.storage import load_config, save_config
-from core.tts_engine import NoInternetError, TTSError, synthesize
-
-# 3 vozes pt-BR confirmadas no catálogo edge-tts (validadas na Fase 1)
-HARDCODED_VOICES = [
-    ("pt-BR-FranciscaNeural", "Francisca (feminina)"),
-    ("pt-BR-AntonioNeural", "Antonio (masculino)"),
-    ("pt-BR-ThalitaMultilingualNeural", "Thalita (feminina, multilíngue)"),
-]
+from core.text_chunker import chunk
+from core.tts_engine import NoInternetError, TTSError, list_voices, synthesize_chunks
+from ui.components.voice_controls import build_voice_controls
 
 
 async def main(page: ft.Page) -> None:
@@ -34,6 +30,9 @@ async def main(page: ft.Page) -> None:
     file_picker = ft.FilePicker()
     page.services.append(file_picker)
 
+    # Carrega vozes do edge-tts (cache em memória; fallback offline se sem rede)
+    voices = await list_voices()
+
     # --- Componentes ---
     text_area = ft.TextField(
         label="Cole ou digite o texto aqui",
@@ -44,17 +43,28 @@ async def main(page: ft.Page) -> None:
         autofocus=True,
     )
 
-    voice_dropdown = ft.Dropdown(
-        label="Voz",
-        width=300,
-        options=[ft.DropdownOption(key=v, text=label) for v, label in HARDCODED_VOICES],
-        value=config.get("default_voice", HARDCODED_VOICES[0][0]),
+    def _on_voice_or_locale_change(locale: str, voice_short_name: str) -> None:
+        config["default_locale"] = locale
+        config["default_voice"] = voice_short_name
+        save_config(config)
+
+    def _on_rate_change(rate_str: str) -> None:
+        config["default_rate"] = rate_str
+        save_config(config)
+
+    voice_controls = build_voice_controls(
+        voices=voices,
+        initial_locale=config.get("default_locale", "pt-BR"),
+        initial_voice=config.get("default_voice", "pt-BR-FranciscaNeural"),
+        initial_rate=config.get("default_rate", "+0%"),
+        on_voice_change=_on_voice_or_locale_change,
+        on_rate_change=_on_rate_change,
     )
 
     volume_slider = ft.Slider(
         min=0,
         max=100,
-        value=100,
+        value=int(config.get("default_volume", 1.0) * 100),
         divisions=20,
         label="Volume: {value}%",
         width=300,
@@ -78,29 +88,41 @@ async def main(page: ft.Page) -> None:
     async def on_volume_change(e: ft.Event) -> None:
         volume = float(volume_slider.value) / 100.0
         await player.set_volume(volume)
-
-    async def on_voice_change(e: ft.Event) -> None:
-        config["default_voice"] = voice_dropdown.value
+        config["default_volume"] = volume
         save_config(config)
 
     async def do_synthesize_and_play() -> None:
         text = text_area.value or ""
-        voice = voice_dropdown.value or HARDCODED_VOICES[0][0]
+        voice = voice_controls.voice_dropdown.value or "pt-BR-FranciscaNeural"
+        rate = config.get("default_rate", "+0%")
         if not text.strip():
             return
 
         play_button.disabled = True
-        status_text.value = "Sintetizando…"
-        status_text.color = ft.Colors.AMBER_400
         page.update()
 
         try:
-            audio = await synthesize(text, voice, rate=config.get("default_rate", "+0%"))
-            last_audio["bytes"] = audio
+            # Quebra em chunks (todo texto passa pelo chunker — KISS)
+            chunks_text = chunk(text, language="pt")
+            total = len(chunks_text)
+            audios: list[bytes] = []
+
+            i = 0
+            async for audio in synthesize_chunks(chunks_text, voice, rate=rate):
+                i += 1
+                audios.append(audio)
+                status_text.value = f"Sintetizando… ({i}/{total})"
+                status_text.color = ft.Colors.AMBER_400
+                page.update()
+
+            # Concatenação binária dos MP3s (validada na Fase 1: parâmetros consistentes)
+            full_audio = b"".join(audios)
+            last_audio["bytes"] = full_audio
+
             status_text.value = "Tocando…"
             status_text.color = ft.Colors.GREEN_400
             page.update()
-            await player.play(audio)
+            await player.play(full_audio)
         except NoInternetError:
             show_error("Sem conexão — não foi possível sintetizar a voz.")
             status_text.value = "Erro de conexão."
@@ -156,16 +178,52 @@ async def main(page: ft.Page) -> None:
         status_text.color = ft.Colors.GREEN_400
         page.update()
 
-    def on_text_change(e: ft.Event) -> None:
+    async def on_open_file(e: ft.Event) -> None:
+        # Abre o file picker pra escolher um arquivo, extrai texto e coloca no text_area.
+        # Em Flet 0.85, pick_files retorna lista de FilePickerFile com .path
+        result = await file_picker.pick_files(
+            dialog_title="Abrir arquivo",
+            allowed_extensions=[ext.lstrip(".") for ext in SUPPORTED_EXTENSIONS],
+            allow_multiple=False,
+        )
+        if not result:
+            return
+
+        # Pega o primeiro (e único) arquivo
+        file_path = Path(result[0].path)
+        status_text.value = f"Lendo {file_path.name}…"
+        status_text.color = ft.Colors.AMBER_400
+        page.update()
+
+        try:
+            # Extração pode ser pesada (PDF grande) — roda em executor para não travar
+            loop = asyncio.get_running_loop()
+            extracted_text = await loop.run_in_executor(None, extract, file_path)
+            text_area.value = extracted_text
+            on_text_change(None)  # atualiza estado do botão play
+            status_text.value = f"Carregado {file_path.name} ({len(extracted_text)} chars)"
+            status_text.color = ft.Colors.GREEN_400
+            page.update()
+        except ExtractorError as exc:
+            show_error(str(exc))
+            status_text.value = "Erro ao ler arquivo."
+            status_text.color = ft.Colors.RED_400
+            page.update()
+
+    def on_text_change(e: ft.Event | None) -> None:
         has_text = bool((text_area.value or "").strip())
         play_button.disabled = not has_text
         page.update()
 
     text_area.on_change = on_text_change
-    voice_dropdown.on_change = on_voice_change
     volume_slider.on_change = on_volume_change
 
     # --- Botões ---
+    open_button = ft.ElevatedButton(
+        "📁 Abrir arquivo",
+        icon=ft.Icons.FOLDER_OPEN,
+        on_click=on_open_file,
+    )
     play_button = ft.ElevatedButton(
         "▶ Reproduzir",
         icon=ft.Icons.PLAY_ARROW,
@@ -200,8 +258,9 @@ async def main(page: ft.Page) -> None:
                 ),
                 ft.Divider(),
                 text_area,
-                ft.Row([voice_dropdown, volume_slider], spacing=20),
-                ft.Row([play_button, stop_button, save_button], spacing=10),
+                voice_controls.container,
+                ft.Row([volume_slider], spacing=20),
+                ft.Row([open_button, play_button, stop_button, save_button], spacing=10),
                 status_text,
             ],
             spacing=15,
@@ -209,8 +268,8 @@ async def main(page: ft.Page) -> None:
         )
     )
 
-    # Aplica volume inicial
-    await player.set_volume(1.0)
+    # Aplica volume inicial salvo (default 1.0)
+    await player.set_volume(float(config.get("default_volume", 1.0)))
 
     # Shutdown limpo
     async def on_close_handler() -> None:

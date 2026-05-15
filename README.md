@@ -6,7 +6,11 @@ Aplicativo Python + Flet que sintetiza texto em fala usando as vozes neurais da 
 
 ## Status
 
-🚧 **Em desenvolvimento — Fase 0 (preparação do ambiente)**. Veja [`PLANO.md`](PLANO.md) para o roadmap completo.
+🚧 **Em desenvolvimento — Fase 2 (importação de arquivos)**. Veja [`PLANO.md`](PLANO.md) para o roadmap completo.
+
+### Limitações conhecidas
+
+- **Drag-and-drop de arquivos do SO está desabilitado.** O Flet 0.85 não expõe evento de drop de arquivos do sistema operacional na `Page` (os controles `Draggable`/`DragTarget` funcionam apenas dentro da própria UI). Para abrir arquivos, use o botão **"📁 Abrir arquivo"**.
 
 ## Requisitos
 
@@ -30,10 +34,6 @@ pip install -r requirements.txt
 ```
 
 ## Como rodar
-
-> Ainda não há código rodável — a Fase 1 (MVP) implementa a primeira versão executável.
-
-Quando estiver disponível:
 
 ```bash
 python main.py

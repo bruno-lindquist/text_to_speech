@@ -77,3 +77,14 @@ def test_load_config_merges_missing_fields(tmp_path: Path, monkeypatch) -> None:
 
     assert config["default_voice"] == "pt-BR-AntonioNeural"
     assert config["default_rate"] == DEFAULT_CONFIG["default_rate"]
+    # Forward-compat: campos novos (Fase 3) também recebem defaults quando ausentes
+    assert config["default_locale"] == DEFAULT_CONFIG["default_locale"]
+    assert config["default_volume"] == DEFAULT_CONFIG["default_volume"]
+
+
+def test_default_config_has_phase3_fields() -> None:
+    # Garante que Fase 3 adicionou todos os campos esperados (locale, rate, volume)
+    assert DEFAULT_CONFIG["default_locale"] == "pt-BR"
+    assert DEFAULT_CONFIG["default_rate"] == "+0%"
+    assert DEFAULT_CONFIG["default_volume"] == 1.0
+    assert 0.0 <= DEFAULT_CONFIG["default_volume"] <= 1.0

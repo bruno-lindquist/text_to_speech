@@ -6,7 +6,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from core.tts_engine import NoInternetError, TTSError, synthesize
+from core.tts_engine import (
+    NoInternetError,
+    TTSError,
+    Voice,
+    _extract_friendly_name,
+    _reset_voices_cache,
+    list_voices,
+    synthesize,
+)
 
 
 @pytest.mark.asyncio
@@ -68,3 +76,77 @@ async def test_synthesize_real_edge_tts() -> None:
     assert len(audio) > 1000
     # MP3 começa com sync word 0xFFFB ou tem ID3
     assert audio[:2] in (b"\xff\xfb", b"\xff\xf3", b"ID3")
+
+
+# ---------- list_voices ----------
+
+def test_extract_friendly_name_simples() -> None:
+    assert _extract_friendly_name("pt-BR-FranciscaNeural") == "Francisca"
+    assert _extract_friendly_name("en-US-AriaNeural") == "Aria"
+
+
+def test_extract_friendly_name_camelcase() -> None:
+    assert _extract_friendly_name("pt-BR-ThalitaMultilingualNeural") == "Thalita Multilingual"
+
+
+@pytest.mark.asyncio
+async def test_list_voices_returns_voice_objects() -> None:
+    _reset_voices_cache()
+    fake_raw = [
+        {"ShortName": "pt-BR-FranciscaNeural", "Locale": "pt-BR", "Gender": "Female"},
+        {"ShortName": "en-US-AriaNeural", "Locale": "en-US", "Gender": "Female"},
+    ]
+    with patch("core.tts_engine.edge_tts.list_voices", AsyncMock(return_value=fake_raw)):
+        voices = await list_voices()
+
+    assert len(voices) == 2
+    assert all(isinstance(v, Voice) for v in voices)
+    short_names = {v.short_name for v in voices}
+    assert "pt-BR-FranciscaNeural" in short_names
+    assert "en-US-AriaNeural" in short_names
+
+
+@pytest.mark.asyncio
+async def test_list_voices_sorted_by_locale_then_name() -> None:
+    _reset_voices_cache()
+    fake_raw = [
+        {"ShortName": "en-US-GuyNeural", "Locale": "en-US", "Gender": "Male"},
+        {"ShortName": "pt-BR-FranciscaNeural", "Locale": "pt-BR", "Gender": "Female"},
+        {"ShortName": "en-US-AriaNeural", "Locale": "en-US", "Gender": "Female"},
+    ]
+    with patch("core.tts_engine.edge_tts.list_voices", AsyncMock(return_value=fake_raw)):
+        voices = await list_voices()
+
+    locales_in_order = [v.locale for v in voices]
+    assert locales_in_order == ["en-US", "en-US", "pt-BR"]
+    en_names = [v.friendly_name for v in voices if v.locale == "en-US"]
+    assert en_names == sorted(en_names)
+
+
+@pytest.mark.asyncio
+async def test_list_voices_caches_result() -> None:
+    _reset_voices_cache()
+    fake_raw = [{"ShortName": "pt-BR-FranciscaNeural", "Locale": "pt-BR", "Gender": "Female"}]
+    mock = AsyncMock(return_value=fake_raw)
+    with patch("core.tts_engine.edge_tts.list_voices", mock):
+        await list_voices()
+        await list_voices()
+        await list_voices()
+
+    # Só foi à rede uma vez — duas chamadas seguintes vieram do cache
+    assert mock.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_list_voices_falls_back_when_offline() -> None:
+    _reset_voices_cache()
+    # Simula falha de rede no edge-tts
+    with patch(
+        "core.tts_engine.edge_tts.list_voices",
+        AsyncMock(side_effect=ConnectionError("DNS lookup failed")),
+    ):
+        voices = await list_voices()
+
+    assert len(voices) == 1
+    assert voices[0].short_name == "pt-BR-FranciscaNeural"
+    assert voices[0].locale == "pt-BR"

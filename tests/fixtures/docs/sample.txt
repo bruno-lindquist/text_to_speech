@@ -1,0 +1,4 @@
+Olá, mundo! Este é um arquivo TXT de teste.
+Tem várias linhas, e até abreviações como Sr. Silva.
+
+E parágrafos separados em branco.

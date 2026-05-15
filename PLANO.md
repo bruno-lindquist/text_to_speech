@@ -384,14 +384,14 @@ Implementação **incremental**. Cada fase entrega algo funcional e tem **checkp
 10. **Calibração empírica do limite de chunk**: testar com texto de 5000, 10000, 20000 chars; medir tempo de resposta do edge-tts; ajustar `max_chars` se preciso.
 
 **Checkpoints:**
-- [ ] Abrir um `.txt` longo (>10k chars) e ouvir do início ao fim sem erro
-- [ ] Abrir um `.pdf` de pelo menos 3 páginas e ouvir
-- [ ] Abrir um `.docx` simples e ouvir
-- [ ] Abrir um `.epub` (qualquer livro pequeno em domínio público) e ouvir
-- [ ] `pysbd` respeita abreviações: "Sr. Silva foi ao Dr. Mendes. Depois voltou para casa." vira **2 frases** ("Sr. Silva foi ao Dr. Mendes." + "Depois voltou para casa."), **não 4**
-- [ ] Drag-and-drop funciona OU está documentado como desabilitado no README
-- [ ] Limite ideal de `max_chars` calibrado e anotado no `text_chunker.py`
-- [ ] Testes de `extractors/` passam com fixtures em `tests/fixtures/docs/`
+- [x] Abrir um `.txt` longo (>10k chars) e ouvir do início ao fim sem erro
+- [~] ~~Abrir um `.pdf` de pelo menos 3 páginas e ouvir~~ (pulado — validação manual deferida; cobertura via testes unitários do extractor)
+- [~] ~~Abrir um `.docx` simples e ouvir~~ (pulado — validação manual deferida; cobertura via testes unitários do extractor)
+- [~] ~~Abrir um `.epub` (qualquer livro pequeno em domínio público) e ouvir~~ (pulado — validação manual deferida; cobertura via testes unitários do extractor)
+- [x] `pysbd` respeita abreviações: "Sr. Silva foi ao Dr. Mendes. Depois voltou para casa." vira **2 frases** ("Sr. Silva foi ao Dr. Mendes." + "Depois voltou para casa.") — coberto por `test_pysbd_respeita_abreviacoes_pt`
+- [x] Drag-and-drop funciona OU está documentado como desabilitado no README — **desabilitado** (Flet 0.85 não expõe evento de drop de arquivos do SO; documentado em README → "Limitações conhecidas")
+- [x] Limite ideal de `max_chars` calibrado e anotado no `text_chunker.py`
+- [x] Testes de `extractors/` passam com fixtures em `tests/fixtures/docs/`
 
 ---
 
@@ -409,12 +409,12 @@ Implementação **incremental**. Cada fase entrega algo funcional e tem **checkp
 7. **Persistência**: voz, idioma, rate e volume escolhidos são salvos em `config.json` ao mudar, e restaurados na próxima abertura.
 
 **Checkpoints:**
-- [ ] Lista de vozes carrega com **pelo menos 5 vozes em pt-BR e 5 em en-US** disponíveis
-- [ ] Trocar idioma filtra as vozes corretamente
-- [ ] Slider de velocidade muda o ritmo (testar -25%, 0%, +25%, +50%) — exige nova síntese, OK
-- [ ] Slider de volume continua mudando o nível **em tempo real** (sem resintetizar) — confirma que volume é do player, não do edge-tts
-- [ ] Sem internet na primeira execução, app abre e usa Francisca como fallback (validar matando rede temporariamente)
-- [ ] Preferências persistem entre reinicializações do app
+- [x] Lista de vozes carrega com **todas as vozes pt-BR (3: Antonio, Francisca, Thalita Multilingual) e pelo menos 5 em en-US** disponíveis — *checkpoint original pedia 5 pt-BR, mas o catálogo edge-tts só tem 3* (validado: 322 vozes carregadas, 3 pt-BR + 17 en-US)
+- [x] Trocar idioma filtra as vozes corretamente
+- [x] Slider de velocidade muda o ritmo (testar -25%, 0%, +25%, +50%) — exige nova síntese, OK (validado a +0% e +55%; áudio +55% mediu 19152 bytes vs 29520 do +0%, confirmando que o rate chegou ao edge-tts)
+- [x] Slider de volume continua mudando o nível **em tempo real** (sem resintetizar) — confirma que volume é do player, não do edge-tts
+- [~] ~~Sem internet na primeira execução, app abre e usa Francisca como fallback~~ — validação manual pulada; **coberto por `test_list_voices_falls_back_when_offline`** que simula `ConnectionError` no `edge_tts.list_voices()` e confirma que o app recebe a voz de fallback
+- [x] Preferências persistem entre reinicializações do app (validado no log: rate=+55% preservado entre cliques e gravado em ~/FizzyBee/config.json)
 
 ---
 

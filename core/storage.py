@@ -5,10 +5,16 @@ import json
 from pathlib import Path
 from typing import Any
 
-# Voz e taxa padrão usadas quando ainda não há config salva
+# Defaults usados quando ainda não há config salva (ou para preencher campos faltantes).
+# - default_voice: short_name no formato edge-tts (ex: "pt-BR-FranciscaNeural")
+# - default_locale: usado pelo dropdown de idioma para abrir já filtrado
+# - default_rate: string no formato edge-tts ("+0%", "-25%", "+50%")
+# - default_volume: float 0.0 - 1.0 (aplicado no AudioPlayer, NÃO no edge-tts)
 DEFAULT_CONFIG: dict[str, Any] = {
     "default_voice": "pt-BR-FranciscaNeural",
+    "default_locale": "pt-BR",
     "default_rate": "+0%",
+    "default_volume": 1.0,
 }
 
 
